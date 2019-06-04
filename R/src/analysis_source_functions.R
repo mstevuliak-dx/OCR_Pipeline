@@ -4,25 +4,45 @@
 
 # ------------------- BACKGROUND CORRECTION
 
-correct_background <- function(d){
+correct_background_OCR <- function(d){
   # correct for outliars in background measurements and remove background
   # takes wells marked as Backfround and for each plate and time substracts median of those from OCR measurements
 
   background <- d %>%
     filter(Protocol == "Background") %>%
     group_by(Measurement, plate_id) %>%
-    mutate( Z_mod = abs(0.6745*(OCR - median(OCR))/mad(OCR)) ) %>%
+    mutate( Z_mod = abs((OCR - median(OCR))/mad(OCR)) ) %>%
     mutate(Mean_to_substr = mean(OCR)) # take mean to substract
 
-  out        <- background %>% filter(Z_mod > 3.5)
-  background <- background %>% filter(Z_mod < 3.5)
+  out        <- background %>% filter(Z_mod > 2.77)
+  background <- background %>% filter(Z_mod < 2.77)
   background <- background[!duplicated(background[,"Mean_to_substr"]),] # reduce the data before joining them
 
   d <- d %>%
     left_join(background, by = c("Measurement", "plate_id" ), suffix  = c("",".y") ) %>%
     mutate(OCR = OCR - Mean_to_substr ) %>%
-    select(-c(contains("y"),"Z_mod", "Mean_to_substr")) %>%
-    filter(Protocol != "Background" )
+    select(-c(contains("y"),"Z_mod", "Mean_to_substr"))
+
+  return(list(data = d, removed = out))
+  rm(background,d)
+}
+
+correct_background_ECAR <- function(d){
+# ECAR Normalizarion
+  background <- d %>%
+    filter(Protocol == "Background") %>%
+    group_by(Measurement, plate_id) %>%
+    mutate( Z_mod = abs((ECAR - median(ECAR))/mad(ECAR)) ) %>%
+    mutate(Mean_to_substr = mean(ECAR)) # take mean to substract
+
+  out        <- background %>% filter(Z_mod > 3.26)
+  background <- background %>% filter(Z_mod < 3.26)
+  background <- background[!duplicated(background[,"Mean_to_substr"]),] # reduce the data before joining them
+
+  d <- d %>%
+    left_join(background, by = c("Measurement", "plate_id" ), suffix  = c("",".y") ) %>%
+    mutate(OCR = OCR - Mean_to_substr ) %>%
+    select(-c(contains("y"),"Z_mod", "Mean_to_substr"))
 
   return(list(data = d, removed = out))
   rm(background,d)
@@ -79,14 +99,26 @@ read_xlsx_set <- function(path_, pattern_){
                               ifelse(grepl("Glyco", Group), "Glyco",
                                 ifelse(grepl("Backgr",Group), "Background", "Other") )))))
 
-    # remove Background from OCR data
-    if (mean(filter(d, Protocol == "Background")$OCR) == 0 ) {
+    # remove Background from OCR  and ECAR
+    is_norm_OCR  <- mean(filter(d, Protocol == "Background")$OCR) == 0
+    is_norm_ECAR <- mean(filter(d, Protocol == "Background")$ECAR) == 0
+    if (is_norm_OCR & is_norm_ECAR) {
       d <- d %>% filter(Protocol != "Background")
     } else {
-      corr <- correct_background(d)
-      d    <- corr$data
-      out  <- corr$removed
-      cat("There were ", nrow(out), " background measurements removed on plate: ", assay_name, "\n")
+      if (! is_norm_OCR) {
+        corr <- correct_background_OCR(d)
+        d    <- corr$data
+        out  <- corr$removed
+        cat("There were ", nrow(out), " OCR background measurements removed on plate: ", assay_name, "\n")
+
+      } else if (! is_norm_ECAR) {
+        corr <- correct_background_ECAR(d)
+        d    <- corr$data
+        out  <- corr$removed
+        cat("There were ", nrow(out), " ECAR background measurements removed on plate: ", assay_name, "\n")
+
+      }
+      d <- d %>% filter(Protocol != "Background")
     }
 
 
@@ -100,8 +132,10 @@ read_xlsx_set <- function(path_, pattern_){
     # the Enries with blanks should be filtered, Must be here !
     d <- d %>%filter(!is.na(Protocol))
 
-    # add log OCR
+    # add log OCR, ECAR
     d$LOCR <- sapply(d$OCR, log)
+    d$LECAR <- sapply(d$ECAR, log)
+
 
     # add sample ID   If "+" in the filename recognizes two samples on plate
     if (grepl("\\+", as.character(x))) {
@@ -142,6 +176,7 @@ idfy_outliar <- function(DT, x, cut.well, cut.point ){
     dm$fitted <- fitted(fit_all)
     dm$residuals = residuals(fit_all)
 
+    # get mean of fitted in interval
     dm <- dm %>%  group_by(sample_id, Interval) %>%
       mutate(int_mean = mean(fitted, na.rm = T),
              n= n(),
@@ -154,7 +189,7 @@ idfy_outliar <- function(DT, x, cut.well, cut.point ){
     # Done for Well
     dm <- dm %>% group_by(sample_id) %>%
       mutate(median_mean_sq_err = median(mean_err_sq, na.rm = T ),
-             mad_mean_sqE       = mad(mean_err_sq, na.rm = T),
+             mad_mean_sqE       = mad(mean_err_sq, na.rm = T),   # of wells in particular interval (not all the wells)
              is.out.w           = median_mean_sq_err + cut.well * mad_mean_sqE < mean_err_sq) %>%
       ungroup()
     # Print
@@ -170,7 +205,6 @@ idfy_outliar <- function(DT, x, cut.well, cut.point ){
     left_join(dm, by = c("Measurement", "Well", "Group", "Time", "plate_id", "Protocol", "Interval"), suffix  = c("",".y") ) %>%
     mutate(is.out.w = replace_na(is.out.w, T)) %>%
     select(-c(contains("y"), "mad_mean_sqE", "sq_err", "int_mean"))
-
   # ------------ Single Point Outliars
 
   i <- 1
@@ -187,10 +221,7 @@ idfy_outliar <- function(DT, x, cut.well, cut.point ){
       mutate(int_mean = mean(fitted, na.rm = T),
              sq_err   = (x-int_mean)^2) %>%
       ungroup()
-    # get mean error in well
-    dm <- dm %>% group_by(sample_id, Well) %>%
-      mutate(mean_err_sq = mean(sq_err, na.rm = T) ) %>%
-      ungroup()
+
     # SINGLE
     dm <- dm %>%  group_by(sample_id, Interval) %>%
       mutate(median_sqE = median(sq_err),
@@ -224,17 +255,19 @@ idfy_outliar <- function(DT, x, cut.well, cut.point ){
 
 # -------------------------------------------------------------------------------------- COMPUTE BIOENERGETICS
 
-compute_bioenergetics <- function(dm_r){
+compute_bioenergetics <- function(dm_r, method){  # !! ADD norm Stand ERR
+
   dt_rem <- dm_r %>%
     filter(out == "NO")
 
+  dm$x <- dm[[method]]
   estimates   <- data.frame()
   errors      <- data.frame()
   coef_melted <- data.frame()
 
   for (sample in unique(dt_rem$sample_id)) {
     d <- dt_rem %>% filter(sample_id == sample)
-    fit  <- lm(LOCR ~ -1  + Interval, data = d)
+    fit  <- lm(x ~ -1  + Interval, data = d)
     coef <- summary(fit)$coefficients
     # Trim the row names to extract only factor
     rownames(coef) <- sapply(rownames(coef), function(x){ substr(x,(nchar(x)+1)-4,nchar(x)) })
@@ -259,18 +292,46 @@ compute_bioenergetics <- function(dm_r){
 
     estimates   <- rbind(estimates, ints_est)
     errors      <- rbind(errors, ints_sde)
+  }
 
+  if (method == "LOCR") {
+    estimates <- estimates %>% mutate(norm.Int1 = exp(Int1), norm.Int2 = exp(Int2), norm.Int3 = exp(Int3), norm.Int4 = exp(Int4))
+    norm.bio_e <- estimates %>%
+      mutate(norm.Int1 = exp(Int1), norm.Int2 = exp(Int2), norm.Int3 = exp(Int3), norm.Int4 = exp(Int4),
+             Basal.Resp       = norm.Int1 - norm.Int4,
+             ATP.linked.Resp  = norm.Int1 - norm.Int2,
+             Proton.Leak      = norm.Int2 - norm.Int4,
+             Spare.Resp.Cpcty = norm.Int3 - norm.Int1,
+             Maximal.Resp     = norm.Int3 - norm.Int4,
+             Non.Mito.Resp    = norm.Int4) %>%
+
+      select(c("Sample", "Basal.Resp", "ATP.linked.Resp", "Proton.Leak", "Spare.Resp.Cpcty", "Maximal.Resp", "Non.Mito.Resp"))
+
+    log.bio_e <- estimates %>%
+      mutate(lBasal.Resp        = Int1 - Int4,
+             lATP.linked.Resp   = Int1 - Int2,
+             lProton.Leak       = Int2 - Int4,
+             lSpare.Resp.Cpcty  = Int3 - Int1,
+             lMaximal.Resp      = Int3 - Int4) %>%
+      select(c("Sample", "lBasal.Resp", "lATP.linked.Resp", "lProton.Leak", "lSpare.Resp.Cpcty", "lMaximal.Resp"))
+
+  } else if (method == "LECAR") {
+    estimates <- estimates %>% mutate(norm.Int1 = exp(Int1), norm.Int2 = exp(Int2), norm.Int5 = exp(Int5))
+    norm.bio_e <- estimates %>%
+      mutate(Basal.Glyco       = norm.Int1 - norm.Int5,
+             Max.Glyco.Cpcty   = norm.Int2 - norm.Int5,
+             Glyco.Rsrv.Cpcty  = norm.Int2 - norm.Int1,
+             Non.Glyco.Acid.   = norm.Int5) %>%
+      select(c("Sample", "Basal.Glyco", "Max.Glyco.Cpcty", "Glyco.Rsrv.Cpcty", "Non.Glyco.Acid."))
+
+    log.bio_e <- estimates %>%
+      mutate(lBasal.Glyco      = Int1 - Int5,
+        lMax.Glyco.Cpcty  = Int2 - Int5,
+        lGlyco.Rsrv.Cpcty = Int2 - Int1) %>%
+      select(c("Sample", "lBasal.Glyco", "lMax.Glyco.Cpcty", "lMax.Glyco.Cpcty"))
 
   }
 
-  bio_e <- estimates %>%
-    mutate(Basal.Resp       = (Int1 - Int4) / Int1,
-           ATP.linked.Resp  = (Int1 - Int2) / Int1,
-           Proton.Leak      = (Int2 - Int4) / Int2,
-           Spare.Resp.Cpcty = Int3 / Int1,
-           Maximal.Resp     = Int3 / Int4) %>%
-    select(c("Basal.Resp", "ATP.linked.Resp", "Proton.Leak", "Spare.Resp.Cpcty", "Maximal.Resp", "Sample" ))
 
-
-  return(list(bio_e = bio_e, estim = estimates, err = errors, coef_melted = coef_melted))
+  return(list(norm.bio_e = norm.bio_e, log.bio_e = log.bio_e, estim = estimates, err = errors, coef_melted = coef_melted))
 }

@@ -1,0 +1,39 @@
+Sample,Bio.Energetics,value
+ 40 pre-12,lBasal.Glyco,0.19585064673336694
+ 40 pre-12,lMax.Glyco.Cpcty,0.8935640685066883
+ 42 pre-2,lBasal.Glyco,0.4487135287345785
+ 42 pre-2,lMax.Glyco.Cpcty,0.9729230308287131
+ 49 pre-11,lBasal.Glyco,0.7799880690807979
+ 49 pre-11,lMax.Glyco.Cpcty,1.1897221592348548
+#46 pre-10,lBasal.Glyco,0.8168261162510682
+#46 pre-10,lMax.Glyco.Cpcty,1.1813930894139744
+24-post-0,lBasal.Glyco,0.754499296976606
+24-post-0,lMax.Glyco.Cpcty,1.1651072745850248
+24-pre-1,lBasal.Glyco,0.8309305734212211
+24-pre-1,lMax.Glyco.Cpcty,1.0655768529539285
+31 post-2,lBasal.Glyco,0.631994183709319
+31 post-2,lMax.Glyco.Cpcty,1.0354920961880314
+33-pre-3,lBasal.Glyco,0.6851869833289124
+33-pre-3,lMax.Glyco.Cpcty,1.0542359904351017
+34-post-4,lBasal.Glyco,0.5720554644302198
+34-post-4,lMax.Glyco.Cpcty,1.12570265154771
+34-pre-5,lBasal.Glyco,0.6375018667305108
+34-pre-5,lMax.Glyco.Cpcty,1.0536034230535805
+36-pre-7,lBasal.Glyco,0.9119899660388917
+36-pre-7,lMax.Glyco.Cpcty,1.1841705582291246
+39-post-8,lBasal.Glyco,0.8420244595245143
+39-post-8,lMax.Glyco.Cpcty,1.1369795797623667
+39-pre-9,lBasal.Glyco,0.835169340591484
+39-pre-9,lMax.Glyco.Cpcty,1.111312439232628
+42 post-10,lBasal.Glyco,0.7761027655796857
+42 post-10,lMax.Glyco.Cpcty,0.9759859449181256
+43 post-11,lBasal.Glyco,0.6324773824571741
+43 post-11,lMax.Glyco.Cpcty,1.1199281317578267
+46 post-12,lBasal.Glyco,0.48455078372878546
+46 post-12,lMax.Glyco.Cpcty,1.1648231719545672
+49-post-13,lBasal.Glyco,0.9779327660782302
+49-post-13,lMax.Glyco.Cpcty,1.2684271210745162
+S-36pre-6,lBasal.Glyco,0.6384867629727093
+S-36pre-6,lMax.Glyco.Cpcty,1.0001937212472507
+S-43pre-6,lBasal.Glyco,0.5962337225154095
+S-43pre-6,lMax.Glyco.Cpcty,1.0478528114266932
