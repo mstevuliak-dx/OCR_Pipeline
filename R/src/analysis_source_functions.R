@@ -1,25 +1,25 @@
 # ======================================= FUNCTIONS USED IN ANALYSIS
 # Author: Matej Stevuliak
 
-
 # ------------------- BACKGROUND CORRECTION
 
 correct_background_OCR <- function(d){
   # correct for outliars in background measurements and remove background
-  # takes wells marked as Backfround and for each plate and time substracts median of those from OCR measurements
+  # takes wells marked as Background and for each plate and time substracts median of those from OCR measurements
 
   background <- d %>%
-    filter(Protocol == "Background") %>%
-    group_by(Measurement, plate_id) %>%
-    mutate( Z_mod = abs((OCR - median(OCR))/mad(OCR)) ) %>%
-    mutate(Mean_to_substr = mean(OCR)) # take mean to substract
+    filter(Group == "Background") %>%
+    group_by(Measurement) %>%
+    mutate( Z_mod = abs((OCR - median(OCR))/mad(OCR)) )
 
   out        <- background %>% filter(Z_mod > 2.77)
-  background <- background %>% filter(Z_mod < 2.77)
+  background <- background %>%
+    filter(Z_mod < 2.77) %>%
+    mutate(Mean_to_substr = mean(OCR))
   background <- background[!duplicated(background[,"Mean_to_substr"]),] # reduce the data before joining them
 
   d <- d %>%
-    left_join(background, by = c("Measurement", "plate_id" ), suffix  = c("",".y") ) %>%
+    left_join(background, by = "Measurement", suffix  = c("",".y") ) %>%
     mutate(OCR = OCR - Mean_to_substr ) %>%
     select(-c(contains("y"),"Z_mod", "Mean_to_substr"))
 
@@ -30,18 +30,21 @@ correct_background_OCR <- function(d){
 correct_background_ECAR <- function(d){
 # ECAR Normalizarion
   background <- d %>%
-    filter(Protocol == "Background") %>%
-    group_by(Measurement, plate_id) %>%
-    mutate( Z_mod = abs((ECAR - median(ECAR))/mad(ECAR)) ) %>%
-    mutate(Mean_to_substr = mean(ECAR)) # take mean to substract
+    filter(Group == "Background") %>%
+    group_by(Measurement) %>%
+    mutate( Z_mod = abs((ECAR - median(ECAR))/mad(ECAR)))
+
 
   out        <- background %>% filter(Z_mod > 3.26)
-  background <- background %>% filter(Z_mod < 3.26)
+  background <- background %>%
+    filter(Z_mod < 3.26) %>%
+    mutate(Mean_to_substr = mean(ECAR)) # take mean to substract
+
   background <- background[!duplicated(background[,"Mean_to_substr"]),] # reduce the data before joining them
 
   d <- d %>%
-    left_join(background, by = c("Measurement", "plate_id" ), suffix  = c("",".y") ) %>%
-    mutate(OCR = OCR - Mean_to_substr ) %>%
+    left_join(background, by = "Measurement", suffix  = c("",".y") ) %>%
+    mutate(ECAR = ECAR - Mean_to_substr ) %>%
     select(-c(contains("y"),"Z_mod", "Mean_to_substr"))
 
   return(list(data = d, removed = out))
@@ -52,116 +55,185 @@ correct_background_ECAR <- function(d){
 
 read_xlsx_set <- function(path_, pattern_){
   # returns a combined dataframe from all .xlsx files in folder (path_).
-  # can specify pattern to distinguish "pre" "post"  treatment as: pattern_ = "*pre/post.xlsx"
+  # can specify pattern to distinguish "group1" "group2"  treatment as: pattern_ = "*group1/group2.xlsx"
 
   get_intervals <- function(x, y){
-    # Identifies Interval form measurement time  and group info Used with mapply
-    return(
-      ifelse(grepl("Background",y), "Background",
-             ifelse(grepl(as.character(x), "123"), "Int1",
-                    ifelse((grepl(as.character(x), "456") & (grepl("Oligo", y)|grepl("Glyco", y))), "Int2",
-                           ifelse((grepl(as.character(x), "456") & grepl("FCCP", y)), "Int3",
-                                  ifelse(grepl(as.character(x), "789") & grepl("Glyco", y) , "Int5",
-                                         ifelse(grepl(as.character(x), "789") & ! grepl("Glyco", y), "Int4", "Other" )))))))
+    # Identifies Interval form measurement time  and Protocol info. Used with mapply
+    # INPUT x = Measurement, y = Protocol
+    # OUTPUT = Interval
+    return( ifelse(y == "Back", "Back",
+            ifelse(grepl(as.character(x), "123"), "Int1",
+            ifelse((grepl(as.character(x), "456") & (y == "Olig"|y == "Glyc")), "Int2",
+            ifelse((grepl(as.character(x), "456") & y == "FCCP"), "Int3",
+            ifelse(grepl(as.character(x), "789") & y == "Glyc" , "Int5",
+            ifelse(grepl(as.character(x), "789") & y != "Glyc", "Int4", "Other" )))))))
   }
 
   # list of filenames
   files    <- list.files(path=path_, pattern=pattern_, full.names=TRUE, recursive=FALSE)
   merged_d <- data_frame()
+  Hg_out   <- data_frame()
 
   # for every file create a data frame and merge into one
-  i <- 0   # to tag sample_id
   list.data_frames <- lapply(files, function(x){
+    # --------- READ DATA --------- #
     # Read rates
     d <- read_excel(x,  sheet = "Rate")
 
-    # read assay configuration
+    # Read assay configuration
     head       <- read_excel(x,  sheet = "Assay Configuration")
     assay_name <- as.character(head[3,2])
+    exper_date <- substr(as.character(head[23,2]),1,10)
     rm(head)
+    #### Add plateID column
+    d$plate_id <- rep(paste0(assay_name, " ", exper_date), times = nrow(d))
 
-    # # Read mmHg from raw data
-    # raw <- read_excel(x,  sheet = "Raw")
-    # raw <- raw %>% filter(Tick == "0") %>% select(c("O2 (mmHg)","Well", "Measurement") )
-    #
-    # d <- d %>% left_join(raw, by = c("Measurement", "Well"))
-    # rm(raw)
-    #
-    # add plateID column
-    d$plate_id <- rep(assay_name, times = nrow(d))
-
-    # add Protocol column
-    d <- d %>%
+    #Read mmHg from raw data
+    raw <- read_excel(x,  sheet = "Raw")
+    out_Hg <- raw %>%
       arrange(Well) %>%
-      mutate(Protocol = ifelse(! grepl("\\+", as.character(x)) & !Well %in% c( "A12", "H12", "D07") & 6<as.numeric(substr(Well,2,3)), NA,
-                          ifelse(grepl("Oligo", Group), "Olig",
-                            ifelse(grepl("FCCP",Group), "FCCP",
-                              ifelse(grepl("Glyco", Group), "Glyco",
-                                ifelse(grepl("Backgr",Group), "Background", "Other") )))))
+      filter(Measurement %in% c(1,2,3) & Tick %in% c(0,12,24)) %>%
+      select(c("Well", "Tick", "Measurement", "O2 (mmHg)")) %>%
+      group_by(Well) %>%
+      summarise(average_mmHg = mean(`O2 (mmHg)`),
+                out          = ifelse(average_mmHg > 160 | average_mmHg < 140, T, F )) %>%
+      filter(out == T)
 
-    # remove Background from OCR  and ECAR
-    is_norm_OCR  <- mean(filter(d, Protocol == "Background")$OCR) == 0
-    is_norm_ECAR <- mean(filter(d, Protocol == "Background")$ECAR) == 0
+    # remove Unassigned wells
+    d <- d %>%filter(Group != "Unassigned")
+
+    #### remove Background from OCR  and ECAR ####
+    is_norm_OCR  <- mean(filter(d, Group == "Background")$OCR) == 0
+    is_norm_ECAR <- mean(filter(d, Group == "Background")$ECAR) == 0
     if (is_norm_OCR & is_norm_ECAR) {
-      d <- d %>% filter(Protocol != "Background")
+      d <- d %>% filter(Group != "Background")
     } else {
-      if (! is_norm_OCR) {
-        corr <- correct_background_OCR(d)
-        d    <- corr$data
-        out  <- corr$removed
-        cat("There were ", nrow(out), " OCR background measurements removed on plate: ", assay_name, "\n")
-
-      } else if (! is_norm_ECAR) {
-        corr <- correct_background_ECAR(d)
-        d    <- corr$data
-        out  <- corr$removed
-        cat("There were ", nrow(out), " ECAR background measurements removed on plate: ", assay_name, "\n")
-
-      }
-      d <- d %>% filter(Protocol != "Background")
+      corr <- correct_background_ECAR(d)
+      d    <- corr$data
+      out  <- corr$removed
+      cat("There were ", nrow(out), " ECAR background measurements removed on plate: ", unique(d$plate_id), "\n")
+      #OCR
+      corr <- correct_background_OCR(d)
+      d    <- corr$data
+      out  <- corr$removed
+      cat("There were ", nrow(out), " OCR background measurements removed on plate: ", unique(d$plate_id), "\n")
+      d <- d %>% filter(Group != "Background")
     }
 
+    # Filter out whole wells where average of first ticks from first three measurements
+    # are exceeding interval 140 - 160 mmHg
+    # Filtering has to be done after background norm. to avoid removing controll backgrounds
+    d <- d %>% filter(! Well %in% out_Hg$Well)
+    # make line for report matrix
+    removed_Hg <- data_frame(Plate = unique(d$plate_id),
+                             N_out = nrow(out_Hg),
+                             Wells = paste0(out_Hg$Well, collapse = ""))
+    Hg_out <- rbind(Hg_out, removed_Hg)
+    cat(paste0(nrow(out_Hg), " whole wells removed out from 140 - 160 mmHg interval. Plate: ", unique(d$plate_id) ,"\n"))
+    rm(raw, out_Hg)
+    # ----------------
 
-    # add interval column
-    d$Interval <- mapply(get_intervals, d$Measurement, d$Group)
+    ### Add Protocol column substring of Group column before "-" character
+    d$Protocol <- substr(sub("-.*","", d$Group), start = 1, stop = 4)
+    ### add project column
+    d$Project  <- sub("#.*", "", sub(".*-","", d$Group))
+    ### Add interval column
+    d$Interval <- mapply(get_intervals, d$Measurement, d$Protocol)
 
-    # add column with time on experiment scale
+    ### Add column with time on experiment scale
     d <- d %>% mutate(Time = ifelse(Interval == "Int1" | Interval == "Int2", Measurement,
                               ifelse(Interval == "Int3" | Interval == "Int4", Measurement + 3, Measurement + 6)))
 
-    # the Enries with blanks should be filtered, Must be here !
+    # the entries with blanks should be filtered, Must be here !
     d <- d %>%filter(!is.na(Protocol))
 
-    # add log OCR, ECAR
-    d$LOCR <- sapply(d$OCR, log)
-    d$LECAR <- sapply(d$ECAR, log)
 
+    ### Add log OCR,  log ECAR
+    d$LOCR  <- log(d$OCR)
+    d$LECAR <- log(d$ECAR)
+    d <- d %>% mutate(Power = OCR^0.5)
 
-    # add sample ID   If "+" in the filename recognizes two samples on plate
-    if (grepl("\\+", as.character(x))) {
-      d$sample_id <- as.character(sapply(d$Group, function(x){ substr(x,(nchar(x)+1)-7,nchar(x)) }))
-    }else{
-      d$sample_id <- rep(file_path_sans_ext(basename(x)), nrow(d))  # Takes sample name from filename
-    }
-
-    d <- d %>% mutate(sample_id = paste0(sample_id, "-", i))
-    i <<- i+1
+    ### Add sample ID string Followed # sing in Group Column
+    d$sample_id <- sub(".*#","", d$Group)
+    d <- d %>% mutate(sample_id = paste0(sample_id, "-", Project, " | ", exper_date))
 
     return(d)
   })
   merged_d <- do.call(rbind, list.data_frames)
 
-  return(merged_d)
+  return(list(rates = merged_d, Hg_list = Hg_out))
 }
 
-# -------------------------------------------------------------------------------------- IDENTITY OUTLIARS
+# -------------------------------------------------------------- IDENTIFY SINGLE POINT OUTLIARS
+# USED IN WORKING PIPELINE
 
+idfy_sinleP_outlier <- function(DT, cut.point, x ) {
+  # Identify point outliers based on MAD of the Interval
+  # IN:
+  # DT        = Seahorse data produced by read_xlsx_set() function
+  # cut.point = Treashold for outier removal
+  # x         = Varible used, one of: "OCR", "LOCR", "ECAR", "LECAR"
+  # OUT: list containing data
+  # dm_r      = data with boolean col. is.out.p
+
+  DT <- DT %>% drop_na()
+  dm <- DT
+  dm$x <- dm[[x]] # Create column with regressed variable
+
+  i <- 1
+  keep <- T
+
+  size <- nrow(dm)
+
+  while (keep) {
+
+    # fit simple categorical regression
+    fit <- lm(x ~ -1 + sample_id + Interval + Well, data = dm)
+    # add column with fitted
+    dm$fitted <- fitted(fit)
+
+    # get  of fitted in interval and squared orror of that
+    dm <- dm %>%
+      group_by(sample_id, Interval) %>%
+      mutate(int_mean = mean(fitted, na.rm = T),
+             sq_err   = (x-int_mean)^2) %>%
+      ungroup()
+
+    # SINGLE point removal procedure
+    dm <- dm %>%
+      group_by(sample_id, Interval) %>%
+      mutate(median_sqE = median(sq_err),
+             mad_sqE    = mad(sq_err, na.rm=T),
+             is.out.p   = median_sqE + cut.point * mad_sqE < sq_err) %>%
+      ungroup()
+
+    n_out_p <-  nrow(dm %>% filter(is.out.p == T))
+    cat(i, " Point outliares: ", n_out_p, "--", n_out_p/size*100 ,  "% \n")
+
+    dm <- dm %>% filter(is.out.p == F)
+    if( n_out_p == 0) keep <-F # Stop when no more outliars found
+
+    i <- i+1
+
+  }
+
+  # complete data
+  dm_r <- DT %>%
+    left_join(dm,
+              by = c("Measurement", "Well", "Group", "Time", "plate_id", "Protocol", "Interval"),
+              suffix  = c("",".y") ) %>%
+    mutate(is.out.p = replace_na(is.out.p, T)) %>%
+    select(-c(contains("y"), "median_sqE", "mad_sqE", "sq_err", "int_mean", "x", "fitted"))
+
+  # Print summary
+  cat("Tolat single point outliars: ", nrow(filter(dm_r, is.out.p == T))/size*100, "% \n" )
+
+  return(dm_r)
+}
+
+# ---------------------------------------------------------------------- IDENTIFY OUTLIARS
+# WELLS AND SINGLE POINT, COMBINED (Excluded from used Pipeline)
 idfy_outliar <- function(DT, x, cut.well, cut.point ){
-
-  # if statements ...
-  # if (x == "ECAR") {
-  #   x == "LECAR"
-  # }
 
 
   dm <- DT
@@ -253,85 +325,112 @@ idfy_outliar <- function(DT, x, cut.well, cut.point ){
   return(dm_r)
 }
 
-# -------------------------------------------------------------------------------------- COMPUTE BIOENERGETICS
 
-compute_bioenergetics <- function(dm_r, method){  # !! ADD norm Stand ERR
+# -------------------------------------------------------------------------- COMPUTE BIOENERGETICS
+compute_bioenergetics_ <- function(dm_r, method) {
+  dr <- dm_r %>%
+    filter(is.out.p == FALSE)
 
-  dt_rem <- dm_r %>%
-    filter(out == "NO")
+  dr$x <- dr[[method]]
+  # we are using median instead !!!
+  estim_mean <- dr %>%
+    group_by(sample_id, Interval) %>%
+    summarise(mean = median(x), SD = sd(x), SE = sd(x)/sqrt(n()), size = n(), CV = (SD/mean)*100 )
 
-  dm$x <- dm[[method]]
-  estimates   <- data.frame()
-  errors      <- data.frame()
-  coef_melted <- data.frame()
+  # form datafames
+  estimates  <- cast(estim_mean, sample_id~Interval, value = "mean")
+  deviations <- cast(estim_mean, sample_id~Interval, value = "SD")
+  SErrs      <- cast(estim_mean, sample_id~Interval, value = "SE")
+  numbers    <- cast(estim_mean, sample_id~Interval, value = "size")
+  CVs        <- cast(estim_mean, sample_id~Interval, value = "CV")
 
-  for (sample in unique(dt_rem$sample_id)) {
-    d <- dt_rem %>% filter(sample_id == sample)
-    fit  <- lm(x ~ -1  + Interval, data = d)
-    coef <- summary(fit)$coefficients
-    # Trim the row names to extract only factor
-    rownames(coef) <- sapply(rownames(coef), function(x){ substr(x,(nchar(x)+1)-4,nchar(x)) })
+  # compute Bioenergetics according to the method used
 
-
-    # ---------- Interval Estimates
-    ints_est <- coef[grepl("Int", rownames(coef)),1 ] # take only rows with "Int"
-    #ints <- cbind(Interval = rownames(ints_est), data.frame(ints, row.names=NULL))
-    ints_est <- t(ints_est)
-    ints_est <- as.data.frame(ints_est) %>% mutate(Sample = sample )
-    # ---------- Estimates Standar Error
-    ints_sde <- coef[grepl("Int", rownames(coef)),2 ] # take only rows with "Int"
-    ints_sde <- t(ints_sde)
-    ints_sde <- as.data.frame(ints_sde) %>% mutate(Sample = sample )
-    #est_sde <- cbind(est = ints_est, Std_e = ints_sde)
-
-    # have combined data melted for ploting
-    est_melted  <- cbind(est = melt(ints_est),melt( ints_sde))
-    est_melted  <- est_melted %>% select(c("Sample", Interval = "variable", Estimate = "est.value", SdEr = "value"))
-    coef_melted <- rbind(coef_melted, est_melted)
-
-
-    estimates   <- rbind(estimates, ints_est)
-    errors      <- rbind(errors, ints_sde)
-  }
-
-  if (method == "LOCR") {
-    estimates <- estimates %>% mutate(norm.Int1 = exp(Int1), norm.Int2 = exp(Int2), norm.Int3 = exp(Int3), norm.Int4 = exp(Int4))
-    norm.bio_e <- estimates %>%
-      mutate(norm.Int1 = exp(Int1), norm.Int2 = exp(Int2), norm.Int3 = exp(Int3), norm.Int4 = exp(Int4),
-             Basal.Resp       = norm.Int1 - norm.Int4,
-             ATP.linked.Resp  = norm.Int1 - norm.Int2,
-             Proton.Leak      = norm.Int2 - norm.Int4,
-             Spare.Resp.Cpcty = norm.Int3 - norm.Int1,
-             Maximal.Resp     = norm.Int3 - norm.Int4,
-             Non.Mito.Resp    = norm.Int4) %>%
-
+  if (method == "OCR") {
+    # difference based bioenergetics
+    bio_e <- estimates %>%
+      mutate(Sample           = sample_id,
+             Basal.Resp       = Int1 - Int4,
+             ATP.linked.Resp  = Int1 - Int2,
+             Proton.Leak      = Int2 - Int4,
+             Spare.Resp.Cpcty = Int3 - Int1,
+             Maximal.Resp     = Int3 - Int4,
+             Non.Mito.Resp    = Int4) %>%
+      select(-c("Int1", "Int2", "Int3", "Int4", "sample_id"))
+    # standard errors of mean differences
+    sd_n   <- cbind(sd = deviations, n = numbers)
+    st_errors <- sd_n %>%
+      mutate(Sample           = sd.sample_id,
+             Basal.Resp       = sqrt(((sd.Int1^2)/n.Int1)+((sd.Int4^2)/n.Int4)),
+             ATP.linked.Resp  = sqrt(((sd.Int1^2)/n.Int1)+((sd.Int2^2)/n.Int2)),
+             Proton.Leak      = sqrt(((sd.Int2^2)/n.Int2)+((sd.Int4^2)/n.Int4)),
+             Spare.Resp.Cpcty = sqrt(((sd.Int3^2)/n.Int3)+((sd.Int1^2)/n.Int1)),
+             Maximal.Resp     = sqrt(((sd.Int3^2)/n.Int3)+((sd.Int4^2)/n.Int4)),
+             Non.Mito.Resp    = sd.Int4/sqrt(n.Int4)) %>%
       select(c("Sample", "Basal.Resp", "ATP.linked.Resp", "Proton.Leak", "Spare.Resp.Cpcty", "Maximal.Resp", "Non.Mito.Resp"))
 
-    log.bio_e <- estimates %>%
-      mutate(lBasal.Resp        = Int1 - Int4,
-             lATP.linked.Resp   = Int1 - Int2,
-             lProton.Leak       = Int2 - Int4,
-             lSpare.Resp.Cpcty  = Int3 - Int1,
-             lMaximal.Resp      = Int3 - Int4) %>%
-      select(c("Sample", "lBasal.Resp", "lATP.linked.Resp", "lProton.Leak", "lSpare.Resp.Cpcty", "lMaximal.Resp"))
 
-  } else if (method == "LECAR") {
-    estimates <- estimates %>% mutate(norm.Int1 = exp(Int1), norm.Int2 = exp(Int2), norm.Int5 = exp(Int5))
-    norm.bio_e <- estimates %>%
-      mutate(Basal.Glyco       = norm.Int1 - norm.Int5,
-             Max.Glyco.Cpcty   = norm.Int2 - norm.Int5,
-             Glyco.Rsrv.Cpcty  = norm.Int2 - norm.Int1,
-             Non.Glyco.Acid.   = norm.Int5) %>%
+  } else if (method == "LOCR") {
+    # Ratio based bioenergetics
+    bio_e <- estimates %>%
+      mutate(Sample               = sample_id,
+             log.Basal.Resp       = Int1 - Int4,
+             log.ATP.linked.Resp  = Int1 - Int2,
+             log.Proton.Leak      = Int2 - Int4,
+             log.Spare.Resp.Cpcty = Int3 - Int1,
+             log.Maximal.Resp     = Int3 - Int4,
+             log.Non.Mito.Resp    = Int4) %>%
+      select(-c("Int1", "Int2", "Int3", "Int4", "sample_id"))
+    # standard errors of mean differences
+    sd_n   <- cbind(sd = deviations, n = numbers)
+    st_errors <- sd_n %>%
+      mutate(Sample               = sd.sample_id,
+             log.Basal.Resp       = sqrt(((sd.Int1^2)/n.Int1)+((sd.Int4^2)/n.Int4)),
+             log.ATP.linked.Resp  = sqrt(((sd.Int1^2)/n.Int1)+((sd.Int2^2)/n.Int2)),
+             log.Proton.Leak      = sqrt(((sd.Int2^2)/n.Int2)+((sd.Int4^2)/n.Int4)),
+             log.Spare.Resp.Cpcty = sqrt(((sd.Int3^2)/n.Int3)+((sd.Int1^2)/n.Int1)),
+             log.Maximal.Resp     = sqrt(((sd.Int3^2)/n.Int3)+((sd.Int4^2)/n.Int4)),
+             log.Non.Mito.Resp    = sd.Int4/sqrt(n.Int4)) %>%
+      select(c("Sample", "log.Basal.Resp", "log.ATP.linked.Resp", "log.Proton.Leak", "log.Spare.Resp.Cpcty",
+               "log.Maximal.Resp", "log.Non.Mito.Resp"))
+
+  } else if (method == "ECAR") {
+    bio_e <- estimates %>%
+      mutate(Sample            = sample_id,
+             Basal.Glyco       = Int1 - Int5,
+             Max.Glyco.Cpcty   = Int2 - Int5,
+             Glyco.Rsrv.Cpcty  = Int2 - Int1,
+             Non.Glyco.Acid.   = Int5) %>%
       select(c("Sample", "Basal.Glyco", "Max.Glyco.Cpcty", "Glyco.Rsrv.Cpcty", "Non.Glyco.Acid."))
 
-    log.bio_e <- estimates %>%
-      mutate(lBasal.Glyco      = Int1 - Int5,
-        lMax.Glyco.Cpcty  = Int2 - Int5,
-        lGlyco.Rsrv.Cpcty = Int2 - Int1) %>%
-      select(c("Sample", "lBasal.Glyco", "lMax.Glyco.Cpcty", "lMax.Glyco.Cpcty"))
+    # standard errors of mean differences
+    sd_n   <- cbind(sd = deviations, n = numbers)
+    st_errors <- sd_n %>%
+      mutate(Sample            = sd.sample_id,
+             Basal.Glyco       = sqrt(((sd.Int1^2)/n.Int1)+((sd.Int5^2)/n.Int5)),
+             Max.Glyco.Cpcty   = sqrt(((sd.Int2^2)/n.Int2)+((sd.Int5^2)/n.Int5)),
+             Glyco.Rsrv.Cpcty  = sqrt(((sd.Int2^2)/n.Int2)+((sd.Int1^2)/n.Int1)),
+             Non.Glyco.Acid.   = sd.Int5/sqrt(n.Int5)) %>%
+      select(c("Sample", "Basal.Glyco", "Max.Glyco.Cpcty", "Glyco.Rsrv.Cpcty", "Non.Glyco.Acid."))
+  } else if (method == "LECAR") {
+    bio_e <- estimates %>%
+      mutate(Sample            = sample_id,
+             log.Basal.Glyco       = Int1 - Int5,
+             log.Max.Glyco.Cpcty   = Int2 - Int5,
+             log.Glyco.Rsrv.Cpcty  = Int2 - Int1,
+             log.Non.Glyco.Acid.   = Int5) %>%
+      select(c("Sample", "log.Basal.Glyco", "log.Max.Glyco.Cpcty", "log.Glyco.Rsrv.Cpcty", "log.Non.Glyco.Acid."))
+
+    # standard errors of mean differences
+    sd_n   <- cbind(sd = deviations, n = numbers)
+    st_errors <- sd_n %>%
+      mutate(Sample                = sd.sample_id,
+             log.Basal.Glyco       = sqrt(((sd.Int1^2)/n.Int1)+((sd.Int5^2)/n.Int5)),
+             log.Max.Glyco.Cpcty   = sqrt(((sd.Int2^2)/n.Int2)+((sd.Int5^2)/n.Int5)),
+             log.Glyco.Rsrv.Cpcty  = sqrt(((sd.Int2^2)/n.Int2)+((sd.Int1^2)/n.Int1)),
+             log.Non.Glyco.Acid.   = sd.Int5/sqrt(n.Int5)) %>%
+      select(c("Sample", "log.Basal.Glyco", "log.Max.Glyco.Cpcty", "log.Glyco.Rsrv.Cpcty", "log.Non.Glyco.Acid."))
 
   }
-
-
-  return(list(norm.bio_e = norm.bio_e, log.bio_e = log.bio_e, estim = estimates, err = errors, coef_melted = coef_melted))
+  return(list(bioenergetics = bio_e, standard.errors = st_errors, estimates = estim_mean ))
 }
